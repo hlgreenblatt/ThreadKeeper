@@ -37,6 +37,7 @@ v1 scope (documented in docs/reference-skills-subagent.md):
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -68,9 +69,10 @@ def _log_worker_usage(model, in_tok, out_tok):
 # src/escalation.metta, evaluated through PeTTa by BudgetTracker). LOCAL
 # delegations (Ollama on .41/.248) are free and always proceed ungated.
 #
-# Fail-OPEN: if the policy can't be evaluated (module missing, etc.), we
-# allow the delegation. A broken governor must never silently halt the
-# agent's work — it just means that one call isn't budget-checked.
+# Fail-CLOSED by default: if the policy can't be evaluated (module missing,
+# etc.), cloud delegation is refused. Operators may temporarily restore the
+# prototype's historical fail-open behavior with
+# OMEGACLAW_SUBAGENT_BUDGET_FALLBACK=allow, but the safe default is deny.
 # ----------------------------------------------------------------------
 def _persona_is_cloud(cfg):
     """Classify a persona as cloud vs local. A persona may declare
@@ -88,9 +90,19 @@ def _persona_is_cloud(cfg):
 
 def _escalation_gate(cfg, thread_id="default"):
     """Return (allowed: bool, reason: str). Local → always allow.
-    Cloud → ThreadKeeper's MeTTa policy decides. Never raises (fail-open)."""
+    Cloud → ThreadKeeper's MeTTa policy decides. Never raises (fail-closed by
+    default, configurable with OMEGACLAW_SUBAGENT_BUDGET_FALLBACK=allow)."""
     if not _persona_is_cloud(cfg):
         return (True, "local node — no budget gate")
+
+    def fallback(reason):
+        mode = os.environ.get(
+            "OMEGACLAW_SUBAGENT_BUDGET_FALLBACK", "deny"
+        ).strip().lower()
+        if mode in ("allow", "open", "fail-open", "true", "1"):
+            return (True, f"{reason} — fail-open allow by explicit fallback")
+        return (False, f"{reason} — fail-closed deny")
+
     try:
         # Locate threadkeeper_budget.py: shipped beside this overlay module,
         # or in the repo src/. Add whichever dir holds it to sys.path.
@@ -108,13 +120,13 @@ def _escalation_gate(cfg, thread_id="default"):
                 from threadkeeper_budget import BudgetTracker  # noqa
                 break
         if BudgetTracker is None:
-            return (True, "budget module unavailable — fail-open allow")
+            return fallback("budget module unavailable")
         bt = BudgetTracker()
         # A cloud delegation IS the "this subproblem is hard" signal.
         d = bt.should_escalate(thread_id=thread_id, subproblem_is_hard=True)
         return (bool(d.allowed), d.reason)
     except Exception as e:
-        return (True, f"gate error ({type(e).__name__}) — fail-open allow")
+        return fallback(f"gate error ({type(e).__name__})")
 
 
 # Persona-config directory. Configurable via env var; default is
@@ -143,10 +155,47 @@ _SUBAGENT_HISTORY_CAP = 4000
 _SUBAGENT_RESULTS_CAP = 4000
 
 # Shell tool restrictions. Subagent's shell is more restricted than
-# parent's — no apostrophes (matches parent's existing constraint),
+# parent's — disabled by default, optional executable allowlist, no shell=True,
 # output truncated, default 30s timeout.
 _SHELL_OUTPUT_CAP = 4000
 _SHELL_TIMEOUT_S = 30
+
+
+def _subagent_workspace_root():
+    """Return the filesystem root visible to subagent file tools.
+
+    Defaults to the current working directory so deployments that run the agent
+    from the repo keep the historical relative-path ergonomics while closing
+    absolute/parent traversal escapes. Override with
+    OMEGACLAW_SUBAGENT_WORKSPACE for a narrower or dedicated scratch root.
+    """
+    root = os.environ.get("OMEGACLAW_SUBAGENT_WORKSPACE") or os.getcwd()
+    return os.path.realpath(os.path.abspath(root))
+
+
+def _resolve_workspace_path(path):
+    if not path or "\x00" in str(path):
+        raise ValueError("invalid path")
+    root = _subagent_workspace_root()
+    raw = str(path)
+    candidate = raw if os.path.isabs(raw) else os.path.join(root, raw)
+    resolved = os.path.realpath(os.path.abspath(candidate))
+    if os.path.commonpath([root, resolved]) != root:
+        raise ValueError(
+            f"path escapes subagent workspace ({root}): {path}"
+        )
+    return resolved
+
+
+def _shell_enabled():
+    return os.environ.get("OMEGACLAW_SUBAGENT_ENABLE_SHELL", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _shell_allowlist():
+    raw = os.environ.get("OMEGACLAW_SUBAGENT_SHELL_ALLOWLIST", "")
+    return {x.strip() for x in raw.split(",") if x.strip()}
 
 
 # ----------------------------------------------------------------------
@@ -582,7 +631,8 @@ def _find_close_quote(s, start):
 
 def _tool_read_file(path):
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        resolved = _resolve_workspace_path(path)
+        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
     except Exception as e:
         return f"(read-file error: {e})"
@@ -590,7 +640,11 @@ def _tool_read_file(path):
 
 def _tool_write_file(path, content):
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        resolved = _resolve_workspace_path(path)
+        parent = os.path.dirname(resolved)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(resolved, "w", encoding="utf-8") as f:
             f.write(content)
         return "WRITE-FILE-SUCCESS"
     except Exception as e:
@@ -599,7 +653,11 @@ def _tool_write_file(path, content):
 
 def _tool_append_file(path, content):
     try:
-        with open(path, "a", encoding="utf-8") as f:
+        resolved = _resolve_workspace_path(path)
+        parent = os.path.dirname(resolved)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(resolved, "a", encoding="utf-8") as f:
             f.write(content + "\n")
         return "APPEND-FILE-SUCCESS"
     except Exception as e:
@@ -607,13 +665,24 @@ def _tool_append_file(path, content):
 
 
 def _tool_shell(cmd):
-    """Restricted shell. Matches parent's no-apostrophe constraint,
-    bounded timeout, output truncated."""
-    if "'" in cmd:
-        return "(shell error: apostrophes not allowed)"
+    """Restricted command runner: disabled unless explicitly enabled and
+    executable-allowlisted. Uses shell=False so metacharacters are arguments,
+    not command separators."""
+    if not _shell_enabled():
+        return "(shell error: disabled by default; set OMEGACLAW_SUBAGENT_ENABLE_SHELL=1 and OMEGACLAW_SUBAGENT_SHELL_ALLOWLIST)"
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as e:
+        return f"(shell error: invalid command: {e})"
+    if not argv:
+        return "(shell error: empty command)"
+    allow = _shell_allowlist()
+    exe = os.path.basename(argv[0])
+    if not allow or exe not in allow:
+        return f"(shell error: executable '{exe}' is not allowlisted)"
     try:
         out = subprocess.run(
-            cmd, shell=True, capture_output=True, timeout=_SHELL_TIMEOUT_S,
+            argv, shell=False, capture_output=True, timeout=_SHELL_TIMEOUT_S,
         )
         text = (out.stdout or b"").decode("utf-8", errors="replace")
         text += (out.stderr or b"").decode("utf-8", errors="replace")
