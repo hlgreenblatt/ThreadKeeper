@@ -9,6 +9,10 @@ repos/
 # secrets
 .env
 
+# ThreadKeeper runtime logs (regenerated at runtime; not source)
+memory/usage.jsonl
+memory/escalations.jsonl
+
 # venv
 .venv 
 
@@ -22,3 +26,6 @@ Autotests/logs/
 
 # IDE
 .idea/
+*.env
+telegram.env
+memory/subagent-runs/

@@ -1,159 +1,302 @@
-![OmegaClaw banner](/docs/assets/banner.png)
+# ThreadKeeper
 
-# Meet Oma
+**A configurable hybrid OmegaClaw architecture for open, decentralized,
+budget-aware agent orchestration.**
 
-Oma is the first Telegram agent built on the OmegaClaw framework. Interacting
-with Oma is the fastest way to experience what we’re building with OmegaClaw.
+ThreadKeeper decouples *reasoning quality* from *reasoning frequency*. A
+cheap, persistent **local control loop** holds the thread — goal
+tracking, memory, continuity, and the decision of *when* hard reasoning
+is worth buying. A **local worker loop** iterates cheaply. **Cloud
+specialists** are invoked only for the hard subproblems, governed by an
+explicit token budget. The result is lower cost, better persistence, no
+single-model dependency, and a governance-friendly audit trail — built
+as an **extension to [OmegaClaw-Core](https://github.com/asi-alliance/OmegaClaw-Core)**,
+not a replacement for it.
 
-<p align="center">
-  <a href="https://t.me/ASI_Alliance">
-    <img src="/docs/assets/tg-button.png" width="25%" alt="Chat with Oma">
-  </a>
-</p>
+> **Hackathon:** BGI Sprint I — track *“Improvements to OmegaClaw.”*
+> Team **ThreadKeeper**. See [`HACKATHON.md`](./HACKATHON.md).
 
----
-
-## Overview
-
-OmegaClaw is a neural-symbolic agent framework built on the Hyperon AGI stack.
-It unifies large language models with a formal symbolic layer to create a
-stateful cognitive architecture capable of auditable inference, autonomous
-self-improvement, and long-term persistence.
-
-Unlike reactive, session-based agents, OmegaClaw operates in a continuous
-execution loop, managing its own goals and providing auditable proof trails for
-its reasoning.
-
-The primary design criteria for OmegaClaw were simplicity, ease of extension,
-and transparent implementation. This results in a minimalist MeTTa-based core
-of approximately 200 lines of code.
+![ThreadKeeper four-node mesh](docs/architecture.png)
 
 ---
 
-## Installation
+## The problem: you can't just burn tokens on every loop
 
-Prerequisites: Git, Python3, Pip and [venv](https://docs.python.org/3/library/venv.html) library
+A persistent agent loops continuously. The catch is that the two things
+it does on each loop have wildly different value:
 
-Get [SWI-Prolog 9.1.12 or later](https://www.swi-prolog.org/).
+- **Most loops are cheap bookkeeping** — *what's the goal, what did I
+  just learn, what's the next step?* A small model handles these fine.
+- **A few loops are genuinely hard** — a subtle inference, a tricky
+  synthesis, a high-stakes call. These want a strong model.
 
-Install OmegaClaw:
-```
+Running a frontier model on *every* loop is expensive and unnecessary.
+Running a tiny model on the *hard* loops is cheap but unreliable. And
+pinning everything to one provider is a cost, availability, and
+governance risk. The frequency of reasoning and the quality of reasoning
+are different axes — but most agent stacks couple them.
+
+## The solution: ThreadKeeper's four-node mesh
+
+ThreadKeeper separates the two axes by routing them to different nodes.
+**The models named below are examples — every role is swappable.** See
+[`threadkeeper.config.yaml`](./threadkeeper.config.yaml).
+
+| Node | Role | Runs | Example |
+|---|---|---|---|
+| **1 · Local control loop** | Holds the thread; owns goal/memory/continuity and the **escalation decision** | every iteration — cheapest node | local small model |
+| **2 · Local worker loop** | Iterates cheaply: tools, files, search, drafting | bounded turns per task | local capable model |
+| **3 · Cloud specialist(s)** | Hard subproblems only, via `(delegate …)` | on demand — the only premium spend | cloud reasoning model(s) |
+| **4 · Adjudicator** *(optional)* | Tie-breaker / high-stakes gate | rarely; omit for a 3-node mesh | cloud model |
+
+Between the control loop and the cloud specialist sits a **budget gate**
+([`src/threadkeeper_budget.py`](./src/threadkeeper_budget.py)): it tracks
+token usage per loop and decides — against a configurable budget —
+whether escalation is justified. Every LLM call is logged
+(`memory/usage.jsonl`) and every escalation decision is recorded
+(`memory/escalations.jsonl`), giving an ISO/IEC 42001-friendly audit
+trail of when expensive reasoning was bought and why.
+
+**The policy itself lives in MeTTa, not Python.** The escalation *decision*
+is a set of Atomspace rules in
+[`src/escalation.metta`](./src/escalation.metta) (`tk-escalate`), evaluated
+through OmegaClaw's own MeTTa runtime (PeTTa). `threadkeeper_budget.py` is the
+seam: it supplies live facts (spend, ceiling, soft threshold, local iterations,
+hard-flag) and executes the verdict — but the routing logic is symbolic and
+**agent-readable / agent-rewritable** via the existing `(read-file ...)` /
+`(write-file ...)` skills. This is the same self-modification property
+OpenCog Hyperon is built around (see
+[`docs/recursive-self-improvement.md`](./docs/recursive-self-improvement.md),
+where the agent rewrote its own MeTTa skill). If the MeTTa runtime is
+unavailable (e.g. a host/CI without PeTTa), the gate falls back to an identical
+set of Python rules — verified by
+[`tests/test_escalation_metta_parity.py`](./tests/test_escalation_metta_parity.py),
+which checks the MeTTa verdict equals the Python spec across every branch. The
+budget *numbers* stay in `threadkeeper.config.yaml`; the `.metta` owns only the
+logic.
+
+Full design: **[`docs/architecture.md`](./docs/architecture.md)**.
+
+---
+
+## Why this is an improvement to OmegaClaw *(extension, not correction)*
+
+OmegaClaw-Core is an excellent minimalist neural-symbolic agent: a
+persistent MeTTa control loop, a memory store, auditable inference. That
+persistent loop is *exactly* the right foundation for ThreadKeeper —
+it’s the “thread keeper.” ThreadKeeper adds three things on top and
+changes none of OmegaClaw's existing behavior:
+
+1. **Subagent dispatch** — [`src/subagent.py`](./src/subagent.py) + the
+   `delegate` skill. A bounded, governed delegation primitive that pairs
+   the foundation-model parent with right-sized specialist subagents.
+   This is the mechanism the “cloud specialist” node needs. *(Measured,
+   in earlier local testing against a 30B local model: ~4.7× input-token
+   reduction on tool-heavy delegated workloads. Numbers depend entirely
+   on models and workload — treat as illustrative, not a benchmark.)*
+2. **A cost-awareness seam** —
+   [`src/threadkeeper_budget.py`](./src/threadkeeper_budget.py): token
+   accounting and an escalation decision against a budget threshold.
+3. **A configuration surface** —
+   [`threadkeeper.config.yaml`](./threadkeeper.config.yaml): the
+   four-node mesh declared in one place.
+
+An OmegaClaw deployment that ignores all three runs exactly as it does
+today. ThreadKeeper is the architecture story — and the budget
+discipline — *around* capabilities that slot cleanly into the existing
+framework. It is offered in the spirit of the OmegaClaw / SingularityNET
+vision: open, decentralized, model-agnostic infrastructure for
+autonomous agents.
+
+> **On model choice:** ThreadKeeper makes no claim that any model is
+> “better” than another. Its whole point is that the architecture works
+> regardless of which models fill each role — that’s what makes it
+> open and decentralized.
+
+---
+
+## Quickstart
+
+> ThreadKeeper *is* OmegaClaw-Core plus the three additions above, so
+> the base install is identical. The full upstream install/usage/config
+> reference is preserved below under **Reference**.
+
+### 1. Install (same as OmegaClaw-Core)
+
+Prerequisites: Git, Python 3, Pip, [venv](https://docs.python.org/3/library/venv.html),
+and [SWI-Prolog 9.1.12+](https://www.swi-prolog.org/).
+
+```bash
 git clone https://github.com/trueagi-io/PeTTa
 cd PeTTa
 mkdir -p repos
-git clone https://github.com/asi-alliance/OmegaClaw-Core.git repos/OmegaClaw-Core
+# Clone THIS repo (ThreadKeeper) into the OmegaClaw-Core slot:
+git clone https://github.com/hlgreenblatt/ThreadKeeper.git repos/OmegaClaw-Core
 git clone https://github.com/patham9/petta_lib_chromadb.git repos/petta_lib_chromadb
 cp repos/OmegaClaw-Core/run.metta ./
-```
 
-Setup Python virtual environment (or use your own):
-```
-python3 -m venv ./.venv
-source ./.venv/bin/activate
-```
-
-If you have CPU only machine or don't want calculate embeddings on GPU:
-```
-python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-```
-
-Install Python dependencies:
-```
+python3 -m venv ./.venv && source ./.venv/bin/activate
 python3 -m pip install -r ./repos/OmegaClaw-Core/requirements.txt
 ```
 
----
+### 2. Set model endpoints & keys via environment variables — never hardcode
 
-## Usage
+ThreadKeeper reads API keys **only** from environment variables named in
+the config; it never stores key material in any file. Set the env vars
+for whichever providers your mesh uses:
 
-Before running the system you need to choose your LLM API provider and export the API key as the environment variable.
-| Provider | Env var name | Notes |
-|---|---|---|
-| `Anthropic` (default) | `ANTHROPIC_API_KEY` | Claude models via the Anthropic API. |
-| `OpenAI` | `OPENAI_API_KEY` | GPT models. Also reused by the OpenAI embedding provider below. |
-| `ASICloud` | `ASI_API_KEY` |  MiniMax models via ASI Alliance inference endpoint (`inference.asicloud.cudos.org`). |
-| `ASIOne` | `ASIONE_API_KEY` |  ASI1 Ultra model via ASI:One inference endpoint (`https://api.asi1.ai/v1`). |
-| `Ollama-local` | `OLLAMA_API_KEY` |  Ollama model via local inference endpoint. API endpoint is set via `LLM_SERVER_LOCAL_URL` environment variables. |
-| `OpenRouter` | `OPENROUTER_API_KEY` |  GLM model via OpenRouter inference endpoint. |
+```bash
+# Cheap local nodes (control + worker) — example: a local Ollama endpoint
+export OLLAMA_API_KEY=ollama           # placeholder; local endpoints often don't auth
+export LLM_SERVER_LOCAL_URL=http://localhost:11434
 
-Run the system via the following command which ensures the system is started from the root folder of PeTTa:
+# Cloud specialist — set the key for whatever provider you configured
+export ANTHROPIC_API_KEY=sk-...        # example; swap for your provider
 ```
+
+### 3. Configure the mesh
+
+Edit [`threadkeeper.config.yaml`](./threadkeeper.config.yaml) to point
+each node at the models/endpoints you want and to set the budget
+threshold. The shipped file is a fully-commented example. Then create a
+subagent persona config for the specialist node:
+
+```bash
+cp memory/personas-subagent/researcher.json.example \
+   memory/personas-subagent/researcher.json
+# edit researcher.json: set provider/model/base_url/api_key_env
+```
+
+### 4. Run a thread
+
+Start OmegaClaw as usual (the control loop is the thread keeper):
+
+```bash
 OMEGACLAW_AUTH_SECRET=<channel-secret> sh run.sh run.metta IRC_channel="<irc-channel>"
 ```
-After start go to https://webchat.quakenet.org/ to communicate with the agent. Join `<irc-channel>` and after agent is joined send `auth <channel-secret>` message to authenticate yourself as an agent owner. Please replace `<irc-channel>` and `<channel-secret>` by your own values.
 
-### Import Knowledge
+In the agent's loop, hard subproblems escalate to a specialist via the
+`delegate` skill:
 
-If you are running OmegaClaw without Docker and would like to load it with preset knowledge, follow these steps:
-
-1. Set EMBEDDING_PROVIDER in your environment. It can be set to either OpenAI or Local. OpenAI embeddings also require OPENAI_API_KEY to be set in your environment.
-
-2. Run:
+```metta
+(delegate "find recent papers on Non-Axiomatic Logic and summarize the themes")
 ```
-  sh ./import_knowledge.sh
+
+Inspect the budget state and the current escalation verdict at any time:
+
+```bash
+python3 src/threadkeeper_budget.py            # prints spend summary + escalate? verdict
+cat memory/usage.jsonl                         # per-call token log
+cat memory/escalations.jsonl                   # audit trail of escalation decisions
 ```
-After the script finishes, your OmegaClaw bot will have the preset knowledge stored in its long-term memory (LTM).
 
-If you want to skip preloading the knowledge then run `export IMPORT_KB_ON_START=0`
+Budget/accounting inputs are treated as local audit/control files: existing
+symlinks or non-regular log paths are ignored/fail-closed, usage-log reads are
+capped by `THREADKEEPER_MAX_BUDGET_LOG_BYTES` (default 1 MiB), and the local
+budget config is read only from a regular non-symlink file capped by
+`THREADKEEPER_MAX_BUDGET_CONFIG_BYTES` (default 64 KiB). Size limits are checked
+both before and after opening the file, and bounded reads enforce the same caps,
+so local growth/swap races do not turn accounting/config checks into unbounded
+reads. Usage and escalation audit appends create parent directories
+component-by-component without following symlink ancestors, then flush/fsync the
+log file and best-effort fsync the parent directory before returning. The MeTTa
+escalation policy loader also rejects symlink/non-regular policy paths before
+loading, so a malformed local config/log/policy cannot redirect reads/writes or
+stall escalation checks.
 
-## Reference — Configuration Options
+### What the dashboard numbers mean (honest scope)
 
-### General
+The live mesh dashboard (`channels/local.py`) and the budget tracker both read
+**one agent's `memory/usage.jsonl`** — they are accurate for *that agent, since
+its log began*, and nothing more. Read the tiles with this in mind:
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| `maxNewInputLoops` | 50 | Turns the agent keeps running after a new human message before idling (seconds) |
-| `maxWakeLoops` | 1 | Extra turns granted on each scheduled wake-up |
-| `sleepInterval` | 1 | Delay between loop iterations (seconds) |
-| `wakeupInterval` | 600 | How long idle before the next scheduled wake-up (seconds) |
-| `LLM` | `gpt-5.4` | Model identifier passed to the provider (used with OpenAI provider only) |
-| `provider` | `Anthropic` | LLM provider, see the table of the providers above |
-| `maxOutputToken` | 6000 | Output cap passed to the provider |
-| `reasoningMode` | `medium` | Reasoning-effort hint passed to the provider (OpenAI only) |
-| `securityPolicyPath` | ./repos/OmegaClaw-Core/profile/policy.yaml | Path to the security profile written using
-[OpenShell
-YAML](https://docs.nvidia.com/openshell/reference/policy-schema#filesystem-policy).
-See [./profile/policy.yaml](./profile/policy.yaml) as an example. Empty value
-disables restrictions. |
+- **Per-agent, not fleet-wide.** Each agent keeps its own `usage.jsonl`. A
+  provider's total on the dashboard is that agent's lifetime usage, not your
+  account's total spend across every agent or direct API call. To get a
+  fleet-wide figure you would aggregate every agent's log (not done here).
+- **Tokens are dominated by re-sent context.** A persistent control loop
+  re-sends its growing history every iteration, so cumulative *input* tokens
+  vastly exceed *output* tokens (e.g. a control model can show millions of
+  input tokens against tens of thousands of output). The token count is honest
+  but is mostly the same context counted many times — not N distinct jobs.
+- **Costs use example rates.** The per-model rates in `channels/local.py` /
+  `threadkeeper.config.yaml` are illustrative public figures, not your billed
+  pricing. The cost column is a consistent estimate, not an invoice.
+- **The savings headline is a counterfactual**, comparing the local-heavy mix
+  against an all-frontier build at those same example rates — a relative
+  argument for the architecture, not a claim about absolute dollars.
 
-### Memory (`src/memory.metta`)
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| `maxFeedback` | 50000 | Ceiling on `LAST_SKILL_USE_RESULTS` text fed back into the prompt (chars) |
-| `maxRecallItems` | 20 | Items returned by `query` |
-| `maxEpisodeRecallLines` | 20 | Lines returned by `episodes` |
-| `maxHistory` | 30000 | Tail of `memory/history.metta` included in the prompt (chars) |
-| `embeddingprovider` | `Local` | `Local` (Python-side model) or `OpenAI` (requires `OPENAI_API_KEY`) |
-
-### Channels (`src/channels.metta`)
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| `commchannel` | `irc` | Type of the communication channel for agent to use - `irc`, `telegram`, `mattermost` or `slack` |
-| `IRC_channel` | `##omegaclaw` | IRC channel to join |
-| `IRC_server` | `irc.quakenet.org` | IRC server hostname |
-| `IRC_port` | 6667 | IRC port |
-| `IRC_user` | `omegaclaw` | IRC nickname |
-| `TG_CHAT_ID` |  | Optional Telegram chat ID. If empty, OmegaClaw auto-binds after first valid inbound auth/message. |
-| `TG_POLL_TIMEOUT` | 20 | Telegram polling timeout in seconds. |
-| `SL_CHANNEL_ID` |  | Optional Slack channel ID (for example `C0123456789`). If empty, OmegaClaw auto-binds on first successful auth message. |
-| `SL_POLL_INTERVAL` | 60 | Slack polling interval in seconds (minimum effective value is 60). |
-| `MM_URL` | `https://chat.singularitynet.io` | Mattermost base URL. |
-| `MM_CHANNEL_ID` | `8fjrmabjx7gupy7e5kjznpt5qh` | Mattermost channel ID. |
-
-| Environment variable | Meaning |
-|---|---|
-| `TG_BOT_TOKEN` | Telegram bot token. |
-| `MM_BOT_TOKEN` | Mattermost bot token. |
-| `SL_BOT_TOKEN` | Slack bot token (`xoxb-...`). |
+In short: the dashboard answers *"what did **this agent** route where, at
+illustrative rates"* — which is exactly the architecture story ThreadKeeper is
+making. It is not a billing console.
 
 ---
 
-## Documentation
+## Reference — OmegaClaw-Core
 
-Full documentation lives in [`docs/`](./docs/README.md): introduction,
-tutorials, and API reference as a flat set of markdown files.
+The sections below are OmegaClaw-Core's own install, usage, and
+configuration reference, preserved unchanged. ThreadKeeper does not
+alter any of this behavior.
+
+### Meet Oma
+
+Oma is the first Telegram agent built on the OmegaClaw framework.
+Interacting with Oma is the fastest way to experience the base
+framework. → [Chat on Telegram](https://t.me/ASI_Alliance)
+
+### Overview
+
+OmegaClaw is a neural-symbolic agent framework built on the Hyperon AGI
+stack. It unifies large language models with a formal symbolic layer to
+create a stateful cognitive architecture capable of auditable inference,
+autonomous self-improvement, and long-term persistence. Unlike reactive,
+session-based agents, OmegaClaw operates in a continuous execution loop,
+managing its own goals and providing auditable proof trails for its
+reasoning. The MeTTa-based core is roughly 200 lines of code.
+
+### Usage — LLM provider
+
+Choose your LLM API provider and export the API key as an environment
+variable.
+
+| Provider | Env var | Notes |
+|---|---|---|
+| `Anthropic` (default) | `ANTHROPIC_API_KEY` | Claude models via the Anthropic API. |
+| `OpenAI` | `OPENAI_API_KEY` | GPT models (Responses API). |
+| `ASICloud` | `ASI_API_KEY` | MiniMax models via ASI Alliance endpoint. |
+| `ASIOne` | `ASIONE_API_KEY` | ASI1 model via ASI:One endpoint. |
+| `Ollama-local` | `OLLAMA_API_KEY` | Local model; endpoint via `LLM_SERVER_LOCAL_URL`. |
+| `OpenRouter` | `OPENROUTER_API_KEY` | GLM model via OpenRouter. |
+
+Run the system from the root folder of PeTTa:
+
+```bash
+OMEGACLAW_AUTH_SECRET=<channel-secret> sh run.sh run.metta IRC_channel="<irc-channel>"
+```
+
+### Reference — Configuration
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `maxNewInputLoops` | 50 | Turns the agent keeps running after a new human message before idling. |
+| `maxWakeLoops` | 1 | Extra turns granted on each scheduled wake-up. |
+| `sleepInterval` | 1 | Delay between loop iterations (seconds). |
+| `wakeupInterval` | 600 | How long idle before the next scheduled wake-up (seconds). |
+| `LLM` | `gpt-5.4` | Model identifier passed to the provider. |
+| `provider` | `Anthropic` | LLM provider, see table above. |
+| `maxOutputToken` | 6000 | Output cap passed to the provider. |
+| `reasoningMode` | `medium` | Reasoning-effort hint (OpenAI only). |
+
+Full configuration, memory, and channel tunables live in
+[`docs/reference-configuration.md`](./docs/reference-configuration.md).
+Full documentation: [`docs/`](./docs/README.md).
+
+ThreadKeeper-specific docs:
+- [`docs/architecture.md`](./docs/architecture.md) — the four-node mesh.
+- [`docs/reference-skills-subagent.md`](./docs/reference-skills-subagent.md) — the `delegate` skill.
+- [`docs/tutorial-09-subagents.md`](./docs/tutorial-09-subagents.md) — end-to-end subagent walkthrough.
+- [`docs/recursive-self-improvement.md`](./docs/recursive-self-improvement.md) — **RSI demonstrated**: the agent diagnosed its own failure, designed the fix, had it built, and improved itself — with a human-in-the-loop governor it insisted on. ([full transcript](./docs/xi-interview.md))
+- [`docs/disaster-recovery-and-migration.md`](./docs/disaster-recovery-and-migration.md) — memory persistence + cross-provider migration.
 
 ---
 

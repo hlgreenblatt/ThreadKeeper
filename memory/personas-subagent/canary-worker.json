@@ -1,0 +1,13 @@
+{
+  "persona_file": "prompt-canary-worker.txt",
+  "persona_sha256": "6288e18a746dec463d7b45290682a072c697eed70ff31301d0dbee839cfc2c01",
+  "provider": "openclaw-gateway",
+  "model": "openclaw/default",
+  "base_url": "http://127.0.0.1:18789/v1",
+  "endpoint_kind": "openai_compatible",
+  "node_role": "local",
+  "api_key_env": "OPENCLAW_GATEWAY_TOKEN",
+  "max_output_tokens": 500,
+  "default_tool_subset": ["read-file"],
+  "notes": "Canary worker persona for GoalChainer-ThreadKeeper integration testing. Uses local OpenClaw Gateway."
+}

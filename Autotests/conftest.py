@@ -4,6 +4,7 @@ legacy cleanup to catch any test artifacts the agent wrote AFTER per-test
 teardown ran (agent is autonomous and may produce `remember` calls with a
 delay).
 """
+import shutil
 import time
 
 import pytest
@@ -17,6 +18,9 @@ from helpers import (
 @pytest.fixture(scope="session", autouse=True)
 def _post_session_cleanup():
     yield
+    if shutil.which("docker") is None:
+        print("\n>> post-session cleanup skipped: docker not available", flush=True)
+        return
     print("\n>> post-session cleanup (grace period 15s)", flush=True)
     time.sleep(15)
     h = history_cleanup_by_markers(LEGACY_MARKERS)

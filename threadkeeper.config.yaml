@@ -1,0 +1,166 @@
+# ======================================================================
+# ThreadKeeper — reference configuration
+# ======================================================================
+#
+# ThreadKeeper decouples *reasoning quality* from *reasoning frequency*.
+# Most loop iterations are cheap; expensive reasoning is invoked only
+# when a subproblem is hard enough to justify it. This file declares the
+# four-node mesh and the budget threshold that drives escalation.
+#
+# NOTHING HERE IS A SECRET. Models are referenced by name; API keys are
+# referenced by the *name of the environment variable* that carries them
+# (`api_key_env`), never by value. Populate those env vars at runtime
+# (.env / systemd / docker --env-file). See the Quickstart in README.md.
+#
+# THE MODELS BELOW ARE EXAMPLES, NOT RECOMMENDATIONS. ThreadKeeper is
+# model-agnostic: the architecture works regardless of which models fill
+# each role. Swap in whatever your deployment can reach. No model here is
+# claimed to be "better" than another — they are placeholders chosen to
+# illustrate the *shape* of a sensible cost gradient (cheap/local for the
+# frequent loops, expensive/cloud for the rare hard hops).
+# ======================================================================
+
+version: 1
+
+# ----------------------------------------------------------------------
+# Node 1 — CONTROL LOOP  (the "thread keeper")
+# ----------------------------------------------------------------------
+# Persistent, cheap, always-on. Holds the thread: goal tracking, memory
+# continuity, and the escalation decision itself. Runs every iteration,
+# so it must be the cheapest node. Maps onto OmegaClaw's MeTTa loop +
+# memory store (src/loop.metta, src/memory.metta).
+control_loop:
+  provider: Ollama-local            # example: a local OpenAI-compatible endpoint
+  model: qwen3.5:9b                  # example: a small, fast local model
+  base_url: http://localhost:11434/v1
+  api_key_env: OLLAMA_API_KEY        # env var NAME — not a key
+  max_output_tokens: 2000
+  notes: >
+    Cheapest node, runs every loop. Owns goal state, memory recall, and
+    the escalate?/delegate? decision. Keep this small and local.
+
+# ----------------------------------------------------------------------
+# Node 2 — WORKER LOOP
+# ----------------------------------------------------------------------
+# Iterates cheaply on the current sub-task: tool calls, file edits,
+# search, drafting. Same cost tier as control by default; it does the
+# legwork the control loop decides to spend on. Maps onto the subagent
+# dispatch worker path (src/subagent.py) running a local persona.
+worker_loop:
+  provider: Ollama-local
+  model: qwen2.5-coder:14b           # example: a capable-but-cheap local worker
+  base_url: http://localhost:11434/v1
+  api_key_env: OLLAMA_API_KEY
+  max_output_tokens: 1500
+  default_tool_subset: [search, read-file, write-file, shell]
+  notes: >
+    Does the iterative legwork. Bounded turns per dispatch. Cheap enough
+    to loop many times before any escalation is considered.
+
+# ----------------------------------------------------------------------
+# Node 3 — CLOUD SPECIALIST(S)
+# ----------------------------------------------------------------------
+# Invoked ONLY for hard subproblems, via the (delegate ...) skill backed
+# by src/subagent.py. This is where reasoning *quality* is bought — at a
+# price — decoupled from reasoning *frequency*. You may list more than
+# one specialist; the control loop picks by persona key.
+cloud_specialists:
+  - key: deep-reasoner
+    provider: Anthropic              # example cloud provider
+    model: claude-opus-4-6           # example: a strong reasoning model
+    base_url: https://api.anthropic.com/v1/
+    api_key_env: ANTHROPIC_API_KEY   # env var NAME — not a key
+    max_output_tokens: 4000
+    default_tool_subset: [search, read-file]
+    notes: >
+      Hard-subproblem specialist. Invoked rarely, only when the control
+      loop's escalation trigger fires. High quality, high cost-per-call.
+
+  - key: code-specialist
+    provider: OpenAI                 # example: a different cloud provider
+    model: gpt-5.4                    # example
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    max_output_tokens: 4000
+    default_tool_subset: [read-file, write-file, shell]
+    notes: >
+      Optional second specialist for code-heavy subproblems. Shows that
+      multiple cloud specialists can coexist; no single-model dependency.
+
+# ----------------------------------------------------------------------
+# Node 4 — ADJUDICATOR  (optional)
+# ----------------------------------------------------------------------
+# When two specialists disagree, or a high-stakes action is gated, an
+# adjudicator casts the deciding read. Optional: omit the whole block to
+# run a three-node mesh. Maps conceptually onto OmegaClaw's revision /
+# action-threshold gating (docs/reference-orchestration.md §3-4).
+adjudicator:
+  enabled: false
+  provider: Anthropic
+  model: claude-opus-4-6
+  base_url: https://api.anthropic.com/v1/
+  api_key_env: ANTHROPIC_API_KEY
+  max_output_tokens: 2000
+  notes: >
+    Tie-breaker / high-stakes gate. Disabled by default. Enable for
+    governance-sensitive deployments that want a deciding read on
+    conflicting specialist output before acting.
+
+# ----------------------------------------------------------------------
+# BUDGET — drives the escalation trigger
+# ----------------------------------------------------------------------
+# The cost-awareness layer (src/threadkeeper_budget.py) tracks token
+# usage per loop and compares spend against these thresholds to decide
+# whether escalation to a cloud specialist is permitted. This is the
+# seam that makes "you can't just burn tokens on every loop" an
+# enforceable policy rather than a hope.
+budget:
+  # Currency-agnostic accounting unit. ThreadKeeper tracks tokens; cost
+  # is derived from per-1k-token rates below so you can reason in either.
+  unit: tokens
+
+  # Hard ceiling for a single thread (a thread = one human goal carried
+  # across many loops). When cumulative spend crosses this, escalation
+  # is denied and the control loop must finish on cheap nodes or stop.
+  thread_token_ceiling: 2000000
+
+  # Soft threshold: below this fraction of the ceiling, escalation to a
+  # cloud specialist is freely permitted. Between soft and hard, the
+  # control loop should escalate only for genuinely hard subproblems.
+  escalation_soft_fraction: 0.5
+
+  # Minimum local-loop iterations to attempt before any escalation is
+  # considered. Enforces "iterate cheaply first".
+  min_local_iterations_before_escalation: 2
+
+  # Example per-1k-token rates, used only to render a human-readable
+  # cost estimate. EXAMPLES — set to your providers' real rates. These
+  # are not claims about any provider's pricing.
+  rates_per_1k_tokens:
+    control_loop:   { input: 0.0,   output: 0.0  }   # local => free
+    worker_loop:    { input: 0.0,   output: 0.0  }   # local => free
+    cloud_specialist: { input: 0.015, output: 0.075 } # example cloud rate
+    adjudicator:    { input: 0.015, output: 0.075 }
+
+# ----------------------------------------------------------------------
+# Governance (ISO/IEC 42001-friendly)
+# ----------------------------------------------------------------------
+# ThreadKeeper produces an auditable spend + escalation trail. These
+# settings control where that trail is written.
+governance:
+  usage_log: memory/usage.jsonl       # one JSON record per LLM call
+  escalation_log: memory/escalations.jsonl
+  # When true, every escalation decision (allowed/denied + why) is
+  # recorded, giving an audit trail of when expensive reasoning was
+  # bought and on what budget basis.
+  record_escalation_decisions: true
+
+  # The escalation/routing POLICY itself lives in MeTTa (Atomspace rules), not
+  # in Python. This is the path to that policy file; the budget gate loads it
+  # into OmegaClaw's MeTTa runtime (PeTTa) and evaluates (tk-escalate ...)
+  # against live facts. The agent can read/rewrite this file via its own
+  # (read-file ...) / (write-file ...) skills — self-modifiable governance.
+  # If the MeTTa runtime is unavailable, the gate falls back to the equivalent
+  # Python rules (identical behavior). Numbers stay in `budget:` above; this
+  # file owns only the decision logic.
+  escalation_policy_metta: src/escalation.metta

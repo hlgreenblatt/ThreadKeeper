@@ -1,0 +1,63 @@
+OPEN, DECENTRALIZED AGENT INFRASTRUCTURE — A FIELD OVERVIEW
+
+Section 1. The persistence problem.
+Modern AI agents are typically built on a request-response pattern: a prompt
+goes in, a completion comes out, and the session ends. This works for
+single-shot tasks but fails for any goal that spans time. A persistent agent
+must hold a thread of intent across many steps, remember what it has learned,
+and decide for itself when a sub-problem is worth escalating. The OmegaClaw
+framework addresses this with a continuous, stateful execution loop built on
+the MeTTa/Hyperon stack, rather than a stateless chat call.
+
+Section 2. The cost of statefulness.
+Holding a thread is not free. On each iteration of its loop, an OmegaClaw agent
+re-sends its full working context — the system prompt, the skills catalogue, a
+tail of conversation history, and the most recent tool results — back to the
+language model. A single human message can spawn many iterations, and each
+iteration is a full-context call. The token volume grows quickly. Running every
+one of those iterations on a premium frontier model is expensive and, for most
+of the work, unnecessary.
+
+Section 3. Decoupling quality from frequency.
+The key insight is that reasoning frequency and reasoning quality are different
+axes. Most loop iterations are cheap bookkeeping: tracking the goal, parsing a
+tool result, deciding the next step. A few are genuinely hard and benefit from a
+strong model. A configurable hybrid architecture routes the two cases
+differently: a cheap, always-on control loop holds the thread, a local worker
+loop does the high-volume iterative execution, and cloud specialists are invoked
+only for the hard sub-problems, governed by an explicit token budget.
+
+Section 4. Local-first inference.
+Running the control and worker loops on local hardware — a model you own, on a
+GPU you control — has three benefits. First, cost: local inference is effectively
+free at the margin, so the token-heavy loop no longer bleeds money. Second,
+portability and data ownership: the agent's learned memory stays on your
+machine, not a vendor's. Third, resilience: if a cloud specialist is
+unreachable, the agent degrades to local reasoning instead of failing. No single
+model becomes a point of failure.
+
+Section 5. Governance and auditability.
+Because every reasoning step is appended to an inspectable history, and every
+model call and escalation decision is logged, the system produces an auditable
+trail. This matters for any organization that must answer how and why an
+autonomous agent took an action — the kind of record an ISO/IEC 42001 management
+system expects. Transparency is a property of the architecture, not an
+afterthought bolted on.
+
+Section 6. Cooperating intelligences.
+An agent is one node in a federation, not a singleton optimizing in isolation.
+It draws on cognitive synergy: symbolic, neural, and dialogic methods each
+helping the others past their bottlenecks. The neural component handles
+perception and language; the symbolic layer provides structured, auditable
+inference; the dialogic layer keeps a human in the loop. None of these on its
+own is sufficient; together they cover each other's weaknesses.
+
+Section 7. The economic argument.
+When the high-volume control and worker loops run on free or local engines and
+only the rare hard sub-problem escalates to a paid cloud model, the cost of
+operating a persistent agent falls by an order of magnitude or more. The same
+workload that would cost dollars on a frontier model can cost cents — or nothing
+— when most of it never leaves local hardware. Lower cost, higher resilience, no
+single-model dependency, and a governance-friendly audit trail: these are the
+properties that make open, decentralized agent infrastructure practical at
+scale.

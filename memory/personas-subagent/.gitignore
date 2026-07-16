@@ -1,0 +1,12 @@
+# Deployment-specific subagent persona configs may reference (by env-var
+# NAME, never by value) provider keys and may contain private prompt
+# text. Keep them out of git. The committed scaffolding is the README,
+# the example config, and the example prompt.
+*.json
+prompt-*.txt
+
+# ...but keep the shipped examples/scaffolding:
+!*.json.example
+!prompt-researcher.txt
+!README.md
+!.gitkeep

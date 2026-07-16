@@ -10,6 +10,17 @@ If you are new, read the Introduction in order, then pick tutorials that match w
 
 ---
 
+## ThreadKeeper
+
+This repository is **ThreadKeeper** — a configurable hybrid OmegaClaw architecture (see the top-level [README](/README.md) and [HACKATHON.md](/HACKATHON.md)). ThreadKeeper-specific pages:
+
+- [architecture.md](./architecture.md) — the four-node mesh and escalation-trigger logic (with diagram)
+- [subagent-design.md](./subagent-design.md) — design reference for the subagent-dispatch primitive
+- [reference-skills-subagent.md](./reference-skills-subagent.md) — the `delegate` skill reference
+- [tutorial-09-subagents.md](./tutorial-09-subagents.md) — end-to-end subagent walkthrough
+
+---
+
 ## Introduction
 
 Start here to understand what OmegaClaw is, the hybrid reasoning thesis, how the pieces fit together, and how to get it running.
@@ -53,6 +64,7 @@ User-facing MeTTa skills the agent invokes. Each page follows the template **Sig
 - [reference-skills-communication.md](./reference-skills-communication.md) — `send`, `receive`, `search`
 - [reference-skills-reasoning.md](./reference-skills-reasoning.md) — `metta` (NAL/PLN invocation surface)
 - [reference-skills-remote-agents.md](./reference-skills-remote-agents.md) — `tavily-search`, `technical-analysis`
+- [reference-skills-subagent.md](./reference-skills-subagent.md) — `delegate` (subagent dispatch — ThreadKeeper)
 
 ### Configuration & Adapters
 

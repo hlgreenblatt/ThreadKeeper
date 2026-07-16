@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Run one bounded ThreadKeeper subagent queue-worker loop.
+
+This is an operator/supervisor entrypoint for the async queue primitive. It does
+not daemonize, self-schedule, or enqueue tasks; it only invokes
+subagent.run_queued_worker_loop(...) with explicit bounds and prints the
+structured JSON result to stdout.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ENV_FILE_BLOCKED_KEYS = {
+    "BASH_ENV",
+    "ENV",
+    "HOME",
+    "IFS",
+    "PATH",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "SHELL",
+}
+_ENV_FILE_BLOCKED_PREFIXES = ("LD_", "DYLD_")
+_ENV_FILE_MAX_BYTES = 64 * 1024
+_ENV_FILE_MAX_LINE_CHARS = 4096
+_ENV_FILE_MAX_VALUE_CHARS = 4096
+
+
+def _validate_env_file_key(key: str, env_path: Path, lineno: int) -> None:
+    if not _ENV_KEY_RE.match(key):
+        raise ValueError(f"{env_path}:{lineno}: invalid environment key {key!r}")
+    if key in _ENV_FILE_BLOCKED_KEYS or any(key.startswith(prefix) for prefix in _ENV_FILE_BLOCKED_PREFIXES):
+        raise ValueError(
+            f"{env_path}:{lineno}: unsafe environment key {key!r} is not allowed in worker env files"
+        )
+
+
+def _load_env_file(path: str) -> None:
+    """Load a small operator env file before importing subagent.
+
+    The format is intentionally conservative: blank lines and # comments are
+    ignored; all other lines must be KEY=VALUE with a shell-env-safe KEY. Values
+    are taken literally except for one matching pair of single or double quotes.
+    No shell expansion is performed.
+    """
+    raw_path = Path(path).expanduser()
+    if raw_path.is_symlink():
+        raise ValueError(f"{raw_path}: worker env files must not be symlinks")
+    env_path = raw_path.resolve()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(env_path), flags)
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError(f"{env_path}: worker env file is not a regular file")
+        if file_stat.st_size > _ENV_FILE_MAX_BYTES:
+            raise ValueError(
+                f"{env_path}: worker env file is too large ({file_stat.st_size} bytes > {_ENV_FILE_MAX_BYTES})"
+            )
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            payload = handle.read(_ENV_FILE_MAX_BYTES + 1)
+        if len(payload) > _ENV_FILE_MAX_BYTES:
+            raise ValueError(
+                f"{env_path}: worker env file is too large while reading "
+                f"(>{_ENV_FILE_MAX_BYTES} bytes)"
+            )
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{env_path}: worker env file must be valid UTF-8") from exc
+        for lineno, raw_line in enumerate(text.splitlines(keepends=True), start=1):
+            if len(raw_line) > _ENV_FILE_MAX_LINE_CHARS:
+                raise ValueError(
+                    f"{env_path}:{lineno}: environment line is too long "
+                    f"({len(raw_line)} characters > {_ENV_FILE_MAX_LINE_CHARS})"
+                )
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                raise ValueError(f"{env_path}:{lineno}: expected KEY=VALUE")
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            _validate_env_file_key(key, env_path, lineno)
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            if len(value) > _ENV_FILE_MAX_VALUE_CHARS:
+                raise ValueError(
+                    f"{env_path}:{lineno}: environment value for {key!r} is too long "
+                    f"({len(value)} characters > {_ENV_FILE_MAX_VALUE_CHARS})"
+                )
+            os.environ[key] = value
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _optional_int(value: str | None):
+    if value is None:
+        return None
+    return int(value)
+
+
+def _optional_float(value: str | None):
+    if value is None:
+        return None
+    return float(value)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Run a bounded ThreadKeeper subagent queue worker loop once.",
+    )
+    parser.add_argument(
+        "--env-file",
+        action="append",
+        default=[],
+        help="Load a KEY=VALUE operator env file before importing subagent; may be repeated.",
+    )
+    parser.add_argument(
+        "--run-dir",
+        help="Override OMEGACLAW_SUBAGENT_RUN_DIR before importing subagent.",
+    )
+    parser.add_argument(
+        "--max-tasks",
+        type=_optional_int,
+        default=None,
+        help="Maximum queued tasks to attempt in this invocation; 0 is a safe no-claim smoke.",
+    )
+    parser.add_argument(
+        "--max-idle-polls",
+        type=_optional_int,
+        default=None,
+        help="Number of empty queue polls before exiting idle.",
+    )
+    parser.add_argument(
+        "--poll-interval-s",
+        type=_optional_float,
+        default=None,
+        help="Seconds to sleep between empty queue polls.",
+    )
+    parser.add_argument(
+        "--max-runtime-s",
+        type=_optional_float,
+        default=None,
+        help="Wall-clock runtime cap for this invocation; 0 disables the cap.",
+    )
+    parser.add_argument(
+        "--stop-file",
+        default=None,
+        help="Optional stop-token path checked before claiming queued work.",
+    )
+    parser.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Pretty-print the structured JSON result.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    for env_file in args.env_file:
+        _load_env_file(env_file)
+    if args.run_dir:
+        os.environ["OMEGACLAW_SUBAGENT_RUN_DIR"] = args.run_dir
+
+    src = _repo_root() / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+
+    import subagent  # noqa: WPS433 - import after run-dir env override
+
+    result_text = subagent.run_queued_worker_loop(
+        max_tasks=args.max_tasks,
+        poll_interval_s=args.poll_interval_s,
+        max_idle_polls=args.max_idle_polls,
+        stop_file=args.stop_file,
+        max_runtime_s=args.max_runtime_s,
+    )
+    if args.pretty:
+        print(json.dumps(json.loads(result_text), ensure_ascii=False, sort_keys=True, indent=2))
+    else:
+        print(result_text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

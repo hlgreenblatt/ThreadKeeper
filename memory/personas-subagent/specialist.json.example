@@ -1,0 +1,13 @@
+{
+  "persona_file": "prompt-researcher.txt",
+  "persona_sha256": "1d8dbaf065f3d3df4af08422a23107fce446b80cab5fe9df34dc5a3284d47b60",
+  "provider": "Fireworks",
+  "model": "accounts/fireworks/models/glm-5p2",
+  "base_url": "https://api.fireworks.ai/inference/v1",
+  "endpoint_kind": "openai_compatible",
+  "node_role": "cloud_specialist",
+  "api_key_env": "FIREWORKS_API_KEY",
+  "max_output_tokens": 4000,
+  "default_tool_subset": ["search", "read-file"],
+  "notes": "ThreadKeeper CLOUD SPECIALIST A — GLM 5.2 via Fireworks. Invoked only for a genuinely hard subproblem (advanced reasoning). The 'escalate only when needed' tier. Cloud /v1 path is correct here (not a local Ollama model)."
+}

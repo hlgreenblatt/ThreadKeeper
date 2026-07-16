@@ -1,0 +1,13 @@
+{
+  "persona_file": "prompt-researcher.txt",
+  "persona_sha256": "1d8dbaf065f3d3df4af08422a23107fce446b80cab5fe9df34dc5a3284d47b60",
+  "provider": "Ollama-local",
+  "model": "granite4.1-30b-16k",
+  "base_url": "http://localhost:11434/v1",
+  "endpoint_kind": "ollama_native",
+  "node_role": "local",
+  "api_key_env": "OLLAMA_API_KEY",
+  "max_output_tokens": 1500,
+  "default_tool_subset": ["search", "read-file"],
+  "notes": "ThreadKeeper LOCAL WORKER — runs on granite-30b-16k on the .248 RTX 3090. The delegate skill routes heavy sub-task work here so it costs $0 (own hardware). The control loop (DeepSeek) only supervises."
+}
