@@ -13,7 +13,7 @@ Required env vars for live runs:
 - SL_DRIVER_TOKEN     — Bot User OAuth Token (xoxb-...) of the driver app
 - SL_CHANNEL_ID       — channel id where both bots are members (C0...)
 - SL_AGENT_USER_ID    — bot user id of the agent app (U0...)
-- OMEGACLAW_AUTH_SECRET — agent auth secret (default 0000)
+- OMEGA_AUTH_SECRET   — agent auth secret (default 0000)
 """
 import os
 import sys
@@ -30,10 +30,13 @@ if _SELF_DIR not in sys.path:
 
 from llm import LlmMockController, LLM_MOCK_PORT  # noqa: E402
 
+# Clear any cached real_driver from a sibling mock suite (mock_telegram also has one)
+if 'real_driver' in sys.modules:
+    del sys.modules['real_driver']
 from real_driver import SlackRealDriver  # noqa: E402
 
 
-AUTH_SECRET = os.environ.get("OMEGACLAW_AUTH_SECRET") or "0000"
+AUTH_SECRET = os.environ.get("OMEGA_AUTH_SECRET") or "0000"
 
 
 @pytest.fixture(scope="session")

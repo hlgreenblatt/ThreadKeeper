@@ -11,13 +11,15 @@ filesystem_policy:
   - /opt
   - /var/log
   - /sys/devices/system
-  - /dev/shm
   - /PeTTa
   read_write:
-  - /PeTTa/repos/OmegaClaw-Core/memory
+  - /PeTTa/repos/Omega/memory
+  - /memory-transfer
   - /tmp
   - /dev/null
   - /opt/huggingface
   - /opt/sentence_transformers
+  - /var/tmp
+  - /dev/shm
 landlock:
   compatibility: best_effort

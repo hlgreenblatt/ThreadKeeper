@@ -1,0 +1,16 @@
+PR#345 STATUS (2026-09-09 19:58Z)
+=================================
+Branch: phase2-mech-fresh on fork (bgoertzel-sing/ThreadKeeper)
+Commits: 4 (baaac11, 98c9bbd, 57ed697, b92d024)
+
+b92d024: Fix: channels package import resolution
+  - channels/__init__.py: re-exports CommChannel from src/channels.py via importlib
+  - conftest.py: sys.path ordering (root, channels/, src/)
+  - pyproject.toml: pythonpath = ['.', 'channels', 'src']
+
+Test Results:
+  - test_chat_room_identity_v2.py: 5 collected, all FAILED (pre-existing, needs MeTTa runtime)
+  - test_memory_path_isolation.py: ModuleNotFoundError: No module named 'helper' (conftest path issue)
+  - Full suite: ~20 passed, 3 skipped (partial, CPU contention from petta-chem)
+
+Pushed to fork: YES

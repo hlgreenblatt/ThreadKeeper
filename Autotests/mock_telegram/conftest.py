@@ -45,10 +45,13 @@ if _SELF_DIR not in sys.path:
 from llm import LlmMockController  # noqa: E402
 from llm import LLM_MOCK_PORT as LLM_PORT_DEFAULT  # noqa: E402
 
+# Clear any cached real_driver from a sibling mock suite (mock_slack also has one)
+if 'real_driver' in sys.modules:
+    del sys.modules['real_driver']
 from real_driver import RealTgDriver  # noqa: E402
 
 
-AUTH_SECRET = os.environ.get("OMEGACLAW_AUTH_SECRET") or "0000"
+AUTH_SECRET = os.environ.get("OMEGA_AUTH_SECRET") or "0000"
 
 
 def _agent_username_from_bot_token(token):
@@ -84,7 +87,7 @@ def tg():
     if not driver_token:
         pytest.skip(
             "Telegram autotests require TG_DRIVER_TOKEN env var "
-            "(see Autotests/mock_telegram/README.pdf)"
+            "(see Autotests/mock_telegram/README.md)"
         )
     agent_username = os.environ.get("TG_AGENT_USERNAME")
     if not agent_username:
